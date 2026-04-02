@@ -1,0 +1,29 @@
+# Deep learning & model loading
+torch>=2.0.0
+transformers>=4.40.0
+accelerate>=0.27.0       # required by some large models (BLOOM, CroissantLLM) for device mapping
+sentencepiece>=0.1.99    # tokenizer backend for XLM-R, mT5, CroissantLLM
+protobuf>=3.20.0         # dependency of sentencepiece
+
+# Data handling
+pandas>=2.0.0
+numpy>=1.24.0
+
+# Statistics & correlation analysis
+scipy>=1.11.0
+pingouin>=0.5.4          # richer stats: partial correlations, effect sizes if needed
+
+# Visualization
+matplotlib>=3.7.0
+seaborn>=0.13.0
+
+# Notebooks
+jupyter>=1.0.0
+ipywidgets>=8.0.0        # progress bars and interactive widgets in notebooks
+
+# Utilities
+tqdm>=4.65.0             # progress bars in extraction loops
+datasets>=2.18.0         # optional: for loading stimuli via HuggingFace datasets format
+
+# Stimuli generation
+google-generativeai>=0.8.0   # Gemini API for generating additional sentence pairs

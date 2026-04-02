@@ -1,0 +1,32 @@
+[
+  {
+    "mono_model": "gpt2",
+    "multi_model": "mgpt",
+    "lm_type": "causal",
+    "region": "region2",
+    "corr_result": {
+      "pearson_r": -0.06376061937019097,
+      "pearson_p": 0.7288261529966965,
+      "spearman_rho": -0.19684750733137826,
+      "spearman_p": 0.2802118208048656,
+      "n_items": 32,
+      "p_perm": 0.7307
+    },
+    "p_perm": 0.7307
+  },
+  {
+    "mono_model": "gpt2",
+    "multi_model": "mgpt",
+    "lm_type": "causal",
+    "region": "region3",
+    "corr_result": {
+      "pearson_r": 0.49064307869646007,
+      "pearson_p": 0.004357281959963348,
+      "spearman_rho": 0.4215542521994134,
+      "spearman_p": 0.016261428970130547,
+      "n_items": 32,
+      "p_perm": 0.0049
+    },
+    "p_perm": 0.0049
+  }
+]
