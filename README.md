@@ -1,4 +1,4 @@
-# syntactic-transfer-in-LLM
+# Syntactic Bias in Multilingual Languagage Models
 
 > *Does French syntax echo in how multilingual-language models process English?*
 
@@ -202,17 +202,6 @@ This project establishes a correlational baseline using pre-trained models. The 
 
 ## Requirements
 
-```
-transformers>=4.30.0
-torch>=2.0.0
-scipy
-numpy
-pandas
-matplotlib
-seaborn
-jupyter
-```
-
 ```bash
 pip install -r requirements.txt
 ```
@@ -223,12 +212,9 @@ pip install -r requirements.txt
 
 ```bibtex
 @article{xing2026syntactic,
-  author    = {Xing, Yubin and Sabourin, Laura},
-  title     = {Two co-activated grammars, one brain: Adverb placement processing of {English}--{French} bilinguals},
-  journal   = {Bilingualism: Language and Cognition},
-  year      = {2026},
-  publisher = {Cambridge University Press},
-  note      = {In production}
+  author    = {Xing, Yubin},
+  title     = {Syntactic Bias in Multilingual Language Models},
+  year      = {2026}
 }
 ```
 
