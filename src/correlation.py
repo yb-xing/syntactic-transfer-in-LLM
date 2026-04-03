@@ -1,32 +1,16 @@
 """
 correlation.py
-Surprisal–RT interaction computation and correlation analysis.
+Surprisal analysis for model-pair comparisons (H1: paired t-test).
 
-Core logic (2×2 interaction on both sides):
+Core metric per model pair:
 
-    LLM interaction per item:
-        ΔS_interaction(item) = [S_mono(FR) − S_mono(EN)] − [S_multi(FR) − S_multi(EN)]
+    S_mono(FR−EN)  = surprisal_mono(FR)  − surprisal_mono(EN)   per item
+    S_multi(FR−EN) = surprisal_multi(FR) − surprisal_multi(EN)  per item
 
-    Human RT interaction per item:
-        ΔRT_interaction(item) = [RT_mono(FR) − RT_mono(EN)] − [RT_ebilingual(FR) − RT_ebilingual(EN)]
-
-    Main correlation:
-        ΔS_interaction  ~  ΔRT_interaction     across N items
-
-Rationale for the interaction formulation:
-  - Subtracting the EN baseline from each model normalises out absolute surprisal
-    scale differences between models (different vocab sizes, training corpora).
-  - Subtracting the EN baseline from each human group removes item-level difficulty
-    unrelated to word order.
-  - Both sides then measure the *differential sensitivity to French word order*
-    between the monolingual and multilingual entity — making the analogy structurally
-    parallel and interpretable.
-
-Predictions:
-  - Primary:     ΔS_interaction × ΔRT_interaction at Region 2 — positive correlation
-  - Spillover:   Same at Region 3
-  - Specificity: Effect present for FR_Word_order; absent (or weaker) for unrelated
-                 violations — tests that the result is syntax-specific
+H1 test: paired t-test — mean(S_mono(FR−EN)) > mean(S_multi(FR−EN))
+A significantly positive mean difference means the monolingual model is
+more penalised by French word order than the multilingual model,
+consistent with cross-lingual syntactic transfer.
 """
 
 import os
@@ -34,7 +18,6 @@ import json
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-import matplotlib.lines as mlines
 from scipy import stats
 
 
@@ -60,15 +43,6 @@ MODEL_PAIRS = [
 COND_FR = "FR_Word_order"
 COND_EN = "EN_Word_order"
 
-# RT column names (from behavioral_rt_cleaned.csv) mapped to readable labels.
-# *_resid variants use RT residualized on region text character length (ablation).
-RT_REGION_COLS = {
-    "region2":       "R2_rt",
-    "region3":       "R3_rt",
-    "region2_resid": "R2_rt_resid",
-    "region3_resid": "R3_rt_resid",
-}
-
 # Surprisal column names (from surprisal_causal.py / surprisal_masked.py output).
 # Two variants for masked LMs; causal models always use the standard names.
 #   "PLL"          → standard Salazar et al. (2020) PLL  [default]
@@ -84,8 +58,8 @@ SURP_REGION_COLS = {
     },
 }
 
-# Regions to run the primary correlation over
-CORRELATION_REGIONS = ["region2", "region3"]
+# Regions to analyse
+ANALYSIS_REGIONS = ["region2", "region3"]
 
 
 # ---------------------------------------------------------------------------
@@ -111,52 +85,7 @@ def load_surprisal(paths) -> pd.DataFrame:
     if isinstance(paths, str):
         paths = [paths]
     frames = [pd.read_csv(p) for p in paths]
-    df = pd.concat(frames, ignore_index=True)
-    return df
-
-
-def load_behavioral_rt(rt_path: str) -> pd.DataFrame:
-    """Load the cleaned trial-level RT data from data_preprocessing.py.
-
-    Expected columns (behavioral_rt_cleaned.csv):
-        participant, group, condition, item_no, advTYPE,
-        R1_rt, R2_rt, R3_rt, R4_rt
-        (RT cells are NaN for outlier trials; NaN is excluded from means automatically)
-
-    Note: The RT values here are raw (not residualized on word length / frequency /
-    serial position). For the main analysis, residualize before passing to this
-    pipeline — e.g. using a linear mixed model via statsmodels or pingouin and
-    saving residuals back as R2_rt, R3_rt. For exploratory use, raw means are fine.
-
-    Args:
-        rt_path: Path to behavioral_rt_cleaned.csv.
-
-    Returns:
-        DataFrame with trial-level RT data, including R2_rt_resid / R3_rt_resid
-        columns for the length-residualized ablation (computed on-the-fly if not
-        already present in the CSV).
-    """
-    df = pd.read_csv(rt_path)
-
-    # Add residualized RT columns if missing (e.g. CSV pre-dates Step 7b).
-    # Residualizes each region's raw RT on the character length of that region's
-    # text via OLS, matching the logic in data_preprocessing.add_residualized_rt.
-    for rt_col, text_col, resid_col in [
-        ("R2_rt", "region2_text", "R2_rt_resid"),
-        ("R3_rt", "region3_text", "R3_rt_resid"),
-    ]:
-        if resid_col in df.columns:
-            continue                          # already present — skip
-        if rt_col not in df.columns or text_col not in df.columns:
-            continue
-        nchar  = df[text_col].fillna("").str.len().astype(float)
-        valid  = df[rt_col].notna()
-        slope, intercept = np.polyfit(nchar[valid].values, df.loc[valid, rt_col].values, 1)
-        resid  = df[rt_col] - (intercept + slope * nchar)
-        resid[~valid] = np.nan
-        df[resid_col] = resid
-
-    return df
+    return pd.concat(frames, ignore_index=True)
 
 
 # ---------------------------------------------------------------------------
@@ -183,385 +112,171 @@ def _add_base_item_no(df: pd.DataFrame) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 
 def _pcol(pivot: pd.DataFrame, key: tuple) -> pd.Series:
-    """Safely fetch a MultiIndex column from a pivot, returning NaN Series if absent.
-
-    DataFrame.get(tuple_key, np.nan) returns a scalar nan when the column is
-    missing, making subsequent arithmetic return a float rather than a Series
-    and causing .rename() to fail.  This helper always returns a Series aligned
-    to the pivot's index.
-    """
+    """Safely fetch a MultiIndex column from a pivot, returning NaN Series if absent."""
     if key in pivot.columns:
         return pivot[key]
     return pd.Series(np.nan, index=pivot.index, dtype=float)
 
 
 # ---------------------------------------------------------------------------
-# RT interaction computation
+# Model-vs-model paired t-test
 # ---------------------------------------------------------------------------
 
-def compute_rt_interaction(rt_df: pd.DataFrame, region: str = "region2") -> pd.DataFrame:
-    """Compute per-item RT interaction: [RT_mono(FR)−RT_mono(EN)] − [RT_ebilingual(FR)−RT_ebilingual(EN)].
-
-    Steps:
-      1. Average RT across participants within each (group × condition × item_no) cell.
-         NaN outlier cells are excluded from the mean automatically.
-      2. For each group, compute the condition difference: FR − EN per item.
-      3. Subtract the bilingual condition difference from the monolingual one.
-
-    A positive ΔRT_interaction means monolinguals find FR word order relatively
-    harder than bilinguals do — the predicted human facilitation signal.
-
-    Args:
-        rt_df:  Trial-level DataFrame from load_behavioral_rt.
-        region: One of 'region2' (primary) or 'region3' (spillover).
-
-    Returns:
-        DataFrame with columns: item_no, rt_interaction.
-        Items with missing data in any cell are NaN.
-    """
-    # Derive RT column name, handling the optional _resid suffix.
-    # Using string manipulation instead of a plain dict lookup makes this robust
-    # against Jupyter kernel caching old module state without the _resid keys.
-    _use_resid  = region.endswith("_resid")
-    _base_region = region[: -len("_resid")] if _use_resid else region
-    if _base_region not in RT_REGION_COLS:
-        raise ValueError(f"Unknown region: {region!r}. "
-                         f"Valid base regions: {list(RT_REGION_COLS)}")
-    rt_col = RT_REGION_COLS[_base_region]
-    if _use_resid:
-        rt_col = rt_col + "_resid"   # "R2_rt" → "R2_rt_resid"
-
-    # Add base_item_no for cross-condition pairing (SVadvP_01 + SadvPV_01 → "01")
-    rt_df = _add_base_item_no(rt_df)
-
-    # Per-item mean RT, grouped by group × condition × base_item_no
-    means = (
-        rt_df.groupby(["group", "condition", "base_item_no"])[rt_col]
-        .mean()
-        .reset_index()
-        .rename(columns={rt_col: "mean_rt"})
-    )
-
-    # Pivot to wide: index=base_item_no, columns=(group, condition)
-    pivot = means.pivot_table(
-        index="base_item_no",
-        columns=["group", "condition"],
-        values="mean_rt",
-    )
-
-    # Condition difference per group (FR − EN): how much harder is FR for each group?
-    mono_diff = (
-        _pcol(pivot, ("Monolinguals", COND_FR))
-        - _pcol(pivot, ("Monolinguals", COND_EN))
-    )
-    ebil_diff = (
-        _pcol(pivot, ("Ebilinguals", COND_FR))
-        - _pcol(pivot, ("Ebilinguals", COND_EN))
-    )
-
-    # Interaction: how much MORE does FR cost monolinguals vs. bilinguals?
-    interaction = (mono_diff - ebil_diff).rename("rt_interaction")
-
-    return interaction.reset_index()
-
-
-# ---------------------------------------------------------------------------
-# Surprisal interaction computation
-# ---------------------------------------------------------------------------
-
-def compute_surprisal_interaction(
+def compute_model_delta(
     surprisal_df: pd.DataFrame,
     mono_model:   str,
     multi_model:  str,
     region:       str = "region2",
     pll_variant:  str = "PLL",
 ) -> pd.DataFrame:
-    """Compute per-item surprisal interaction: [S_mono(FR)−S_mono(EN)] − [S_multi(FR)−S_multi(EN)].
+    """Per-item S_mono(FR−EN) and S_multi(FR−EN) for a paired t-test.
 
-    Steps:
-      1. Filter to the two models of interest.
-      2. For each model, compute the condition difference: S(FR) − S(EN) per item.
-         This normalises out absolute surprisal scale differences between models.
-      3. Subtract the multilingual model's condition difference from the monolingual's.
+    Each row is one item. The two columns capture how much each model is
+    penalised by French word order relative to the English baseline.
 
-    A positive ΔS_interaction means the monolingual model is more penalised by FR
-    word order (relative to its EN baseline) than the multilingual model is —
-    the predicted transfer signal.
+    Expected direction: S_mono(FR−EN) > S_multi(FR−EN) on average —
+    the monolingual model is more penalised by French word order than the
+    multilingual model, reflecting transfer-driven surprisal reduction.
 
     Args:
         surprisal_df: Combined surprisal DataFrame from load_surprisal.
-        mono_model:   Key for the monolingual model (e.g. 'roberta', 'gpt2').
-        multi_model:  Key for the multilingual model (e.g. 'xlmr', 'mgpt').
-        region:       One of 'region2' or 'region3'.
-        pll_variant:  Which surprisal column to use for masked LMs.
-                      'PLL'          → standard Salazar et al. (2020) [default]
-                      'PLL_word_l2r' → Kauf & Ivanova (2023) adjusted metric
-                      Causal models always use 'PLL' (only one column available).
+        mono_model:   Key for the monolingual model.
+        multi_model:  Key for the multilingual model.
+        region:       'region2' or 'region3'.
+        pll_variant:  'PLL' or 'PLL_word_l2r' (causal models fall back to 'PLL').
 
     Returns:
-        DataFrame with columns: base_item_no, surprisal_interaction.
-        Items with missing surprisal in any cell are NaN.
+        DataFrame with columns: base_item_no, mono_delta, multi_delta.
+        Rows with NaN in either column are dropped.
     """
     if pll_variant not in SURP_REGION_COLS:
         raise ValueError(f"Unknown pll_variant '{pll_variant}'. "
                          f"Choose from: {list(SURP_REGION_COLS)}")
-    # Strip _resid suffix if present: surprisal has no residualized variant,
-    # so the column lookup always uses the base region name ("region2", "region3").
-    _surp_region = region.replace("_resid", "")
-    surp_col = SURP_REGION_COLS[pll_variant][_surp_region]
+    surp_col = SURP_REGION_COLS[pll_variant][region]
 
     df = surprisal_df[
         surprisal_df["model"].isin([mono_model, multi_model])
     ].copy()
 
-    # Causal LMs have no PLL-word-l2r columns; fall back to standard surprisal.
-    # This allows mixed causal+masked analyses with PLL_word_l2r selected globally.
     if surp_col not in df.columns or df[surp_col].isna().all():
-        fallback = SURP_REGION_COLS["PLL"][_surp_region]
+        fallback = SURP_REGION_COLS["PLL"][region]
         if fallback in df.columns:
             surp_col = fallback
 
-    # Add base_item_no for cross-condition pairing (SVadvP_01 + SadvPV_01 → "01")
     df = _add_base_item_no(df)
-
-    # Pivot: index=base_item_no, columns=(model, condition)
     pivot = df.pivot_table(
         index="base_item_no",
         columns=["model", "condition"],
         values=surp_col,
     )
 
-    # Condition difference per model (FR − EN)
-    mono_diff = (
-        _pcol(pivot, (mono_model,  COND_FR))
-        - _pcol(pivot, (mono_model,  COND_EN))
-    )
-    multi_diff = (
-        _pcol(pivot, (multi_model, COND_FR))
-        - _pcol(pivot, (multi_model, COND_EN))
-    )
+    mono_delta  = (
+        _pcol(pivot, (mono_model,  COND_FR)) - _pcol(pivot, (mono_model,  COND_EN))
+    ).rename("mono_delta")
+    multi_delta = (
+        _pcol(pivot, (multi_model, COND_FR)) - _pcol(pivot, (multi_model, COND_EN))
+    ).rename("multi_delta")
 
-    # Interaction: how much MORE does FR cost the mono model vs. the multi model?
-    interaction = (mono_diff - multi_diff).rename("surprisal_interaction")
-
-    return interaction.reset_index()
+    combined = pd.concat([mono_delta, multi_delta], axis=1).dropna()
+    return combined.reset_index()
 
 
-# ---------------------------------------------------------------------------
-# Merge interactions
-# ---------------------------------------------------------------------------
+def run_model_ttest(model_delta_df: pd.DataFrame) -> dict:
+    """Paired t-test: is S_mono(FR−EN) significantly greater than S_multi(FR−EN)?
 
-def merge_interactions(
-    surp_interaction: pd.DataFrame,
-    rt_interaction:   pd.DataFrame,
-) -> pd.DataFrame:
-    """Join surprisal and RT interaction DataFrames on item_no.
+    Tests H1: mean(mono_delta) > mean(multi_delta), i.e. the monolingual model
+    is more penalised by French word order than the multilingual model.
 
     Args:
-        surp_interaction: Output of compute_surprisal_interaction.
-        rt_interaction:   Output of compute_rt_interaction.
+        model_delta_df: Output of compute_model_delta.
 
     Returns:
-        DataFrame with columns: item_no, surprisal_interaction, rt_interaction.
-        Only items present in both DataFrames are kept; rows with NaN in either
-        column are dropped before returning.
+        Dict with keys: t_stat, p_two_tailed, p_one_tailed, mean_mono,
+        mean_multi, mean_diff, n_items.
     """
-    merged = surp_interaction.merge(rt_interaction, on="base_item_no", how="inner")
-    merged = merged.dropna(subset=["surprisal_interaction", "rt_interaction"])
-    return merged.reset_index(drop=True)
+    mono  = model_delta_df["mono_delta"].values
+    multi = model_delta_df["multi_delta"].values
 
-
-# ---------------------------------------------------------------------------
-# Correlation
-# ---------------------------------------------------------------------------
-
-def run_correlation(merged_df: pd.DataFrame) -> dict:
-    """Compute Pearson r and Spearman rho between ΔS_interaction and ΔRT_interaction.
-
-    Pearson r is the primary statistic (predicted direction: positive).
-    Spearman rho is a robustness check against non-normality and outliers.
-
-    Args:
-        merged_df: Output of merge_interactions, with columns
-                   'surprisal_interaction' and 'rt_interaction'.
-
-    Returns:
-        Dict with keys:
-            pearson_r, pearson_p, spearman_rho, spearman_p, n_items
-    """
-    x = merged_df["surprisal_interaction"].values
-    y = merged_df["rt_interaction"].values
-
-    pearson_r,  pearson_p  = stats.pearsonr(x, y)
-    spearman_r, spearman_p = stats.spearmanr(x, y)
+    t_stat, p_two = stats.ttest_rel(mono, multi)
+    p_one = p_two / 2 if t_stat > 0 else 1.0 - p_two / 2
 
     return {
-        "pearson_r":   float(pearson_r),
-        "pearson_p":   float(pearson_p),
-        "spearman_rho": float(spearman_r),
-        "spearman_p":  float(spearman_p),
-        "n_items":     int(len(x)),
+        "t_stat":        float(t_stat),
+        "p_two_tailed":  float(p_two),
+        "p_one_tailed":  float(p_one),
+        "mean_mono":     float(np.mean(mono)),
+        "mean_multi":    float(np.mean(multi)),
+        "mean_diff":     float(np.mean(mono - multi)),
+        "n_items":       int(len(mono)),
     }
 
 
-def permutation_test(
-    merged_df:      pd.DataFrame,
-    n_permutations: int = 10_000,
-    random_seed:    int = 42,
-) -> float:
-    """Two-tailed permutation test for the Pearson correlation.
-
-    Builds a null distribution by repeatedly shuffling the RT interaction labels
-    and recomputing r, then reports the proportion of null |r| >= observed |r|.
-
-    Args:
-        merged_df:      Output of merge_interactions.
-        n_permutations: Number of shuffle iterations (default 10,000).
-        random_seed:    Seed for reproducibility.
-
-    Returns:
-        Two-tailed permutation p-value (float).
-    """
-    rng = np.random.default_rng(random_seed)
-    x   = merged_df["surprisal_interaction"].values
-    y   = merged_df["rt_interaction"].values
-
-    observed_r, _ = stats.pearsonr(x, y)
-
-    null_rs = np.array([
-        stats.pearsonr(x, rng.permutation(y))[0]
-        for _ in range(n_permutations)
-    ])
-
-    p_perm = float(np.mean(np.abs(null_rs) >= np.abs(observed_r)))
-    return p_perm
-
-
 # ---------------------------------------------------------------------------
-# Scatter plot
+# Violin plot
 # ---------------------------------------------------------------------------
 
-def plot_scatter(
-    merged_df:   pd.DataFrame,
-    corr_result: dict,
-    title:       str,
-    output_path: str,
+def plot_model_delta(
+    model_delta_df: pd.DataFrame,
+    ttest_result:   dict,
+    title:          str,
+    output_path:    str,
 ) -> None:
-    """Scatter plot of ΔS_interaction vs. ΔRT_interaction with a regression line.
+    """Paired violin plot: S_mono(FR−EN) vs S_multi(FR−EN) across items.
 
     Args:
-        merged_df:   Output of merge_interactions.
-        corr_result: Output of run_correlation (used for annotation).
-        title:       Plot title string.
-        output_path: File path to save the figure (PNG).
+        model_delta_df: Output of compute_model_delta.
+        ttest_result:   Output of run_model_ttest.
+        title:          Plot title string.
+        output_path:    File path to save the figure (PNG).
     """
-    x = merged_df["surprisal_interaction"].values
-    y = merged_df["rt_interaction"].values
+    mono_vals  = model_delta_df["mono_delta"].values
+    multi_vals = model_delta_df["multi_delta"].values
 
-    fig, ax = plt.subplots(figsize=(6, 5))
+    fig, ax = plt.subplots(figsize=(5.5, 4.5))
 
-    ax.scatter(x, y, color="#2196F3", alpha=0.75, edgecolors="white",
-               linewidths=0.5, s=60, zorder=3)
-
-    # Regression line
-    slope, intercept, *_ = stats.linregress(x, y)
-    x_line = np.linspace(x.min(), x.max(), 200)
-    ax.plot(x_line, slope * x_line + intercept, color="#F44336",
-            linewidth=1.8, zorder=2)
-
-    # Horizontal and vertical reference lines at zero
-    ax.axhline(0, color="gray", linewidth=0.8, linestyle="--", alpha=0.5)
-    ax.axvline(0, color="gray", linewidth=0.8, linestyle="--", alpha=0.5)
-
-    # Annotation
-    r      = corr_result["pearson_r"]
-    p      = corr_result["pearson_p"]
-    p_perm = corr_result.get("p_perm", None)
-    n      = corr_result["n_items"]
-
-    annot = f"r = {r:.3f},  p = {p:.3f}"
-    if p_perm is not None:
-        annot += f"\np_perm = {p_perm:.3f}"
-    annot += f"\nN = {n} items"
-    ax.text(0.05, 0.95, annot, transform=ax.transAxes,
-            verticalalignment="top", fontsize=9,
-            bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.8))
-
-    ax.set_xlabel("ΔS interaction\n[S_mono(FR−EN) − S_multi(FR−EN)]", fontsize=10)
-    ax.set_ylabel("ΔRT interaction\n[RT_mono(FR−EN) − RT_ebilingual(FR−EN)]", fontsize=10)
-    ax.set_title(title, fontsize=11, fontweight="bold")
-
-    plt.tight_layout()
-    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
-    plt.savefig(output_path, dpi=150, bbox_inches="tight")
-    plt.close()
-    print(f"  Plot saved → {output_path}")
-
-
-def plot_all_pairs(
-    all_results: list[dict],
-    region:      str,
-    output_dir:  str,
-) -> None:
-    """Grid scatter plot — one panel per model pair, for a given region.
-
-    Args:
-        all_results: List of result dicts from run_analysis (one per model pair).
-                     Each dict must contain 'merged_df', 'mono_model', 'multi_model',
-                     'corr_result', 'region'.
-        region:      Which region's results to plot ('region2' or 'region3').
-        output_dir:  Directory to save the figure.
-    """
-    subset = [r for r in all_results if r["region"] == region]
-    n      = len(subset)
-    ncols  = 4
-    nrows  = (n + ncols - 1) // ncols
-
-    fig, axes = plt.subplots(nrows, ncols, figsize=(5 * ncols, 4.5 * nrows))
-    axes = np.array(axes).flatten()
-
-    for ax, result in zip(axes, subset):
-        merged = result["merged_df"]
-        corr   = result["corr_result"]
-        x = merged["surprisal_interaction"].values
-        y = merged["rt_interaction"].values
-
-        ax.scatter(x, y, color="#2196F3", alpha=0.7, s=45, edgecolors="white",
-                   linewidths=0.4, zorder=3)
-        slope, intercept, *_ = stats.linregress(x, y)
-        x_line = np.linspace(x.min(), x.max(), 200)
-        ax.plot(x_line, slope * x_line + intercept, color="#F44336",
-                linewidth=1.5, zorder=2)
-        ax.axhline(0, color="gray", linewidth=0.6, linestyle="--", alpha=0.4)
-        ax.axvline(0, color="gray", linewidth=0.6, linestyle="--", alpha=0.4)
-
-        r = corr["pearson_r"]
-        p = corr["pearson_p"]
-        ax.set_title(
-            f"{result['mono_model']} → {result['multi_model']}\n"
-            f"r = {r:.3f},  p = {p:.3f}",
-            fontsize=9, fontweight="bold",
-        )
-        ax.set_xlabel("ΔS interaction", fontsize=8)
-        ax.set_ylabel("ΔRT interaction", fontsize=8)
-        ax.tick_params(labelsize=7)
-
-    # Hide unused axes
-    for ax in axes[len(subset):]:
-        ax.set_visible(False)
-
-    region_label = "Region 2 (V+Adv)" if region == "region2" else "Region 3 (Spillover)"
-    fig.suptitle(
-        f"ΔS × ΔRT Interaction Correlations — {region_label}",
-        fontsize=13, fontweight="bold", y=1.01,
+    parts = ax.violinplot(
+        [mono_vals, multi_vals],
+        positions=[0, 1],
+        showmedians=True,
+        showextrema=True,
     )
-    plt.tight_layout()
+    colors = ["#2196F3", "#9C27B0"]
+    for pc, color in zip(parts["bodies"], colors):
+        pc.set_facecolor(color)
+        pc.set_alpha(0.55)
+    for key in ("cmedians", "cmins", "cmaxes", "cbars"):
+        parts[key].set_color("black")
+        parts[key].set_linewidth(1.2)
 
-    out_path = os.path.join(output_dir, f"correlation_grid_{region}.png")
-    os.makedirs(output_dir, exist_ok=True)
-    plt.savefig(out_path, dpi=150, bbox_inches="tight")
-    plt.close()
-    print(f"  Grid plot saved → {out_path}")
+    for m, ml in zip(mono_vals, multi_vals):
+        ax.plot([0, 1], [m, ml], color="gray", alpha=0.25, linewidth=0.7)
+    ax.scatter([0] * len(mono_vals),  mono_vals,  color="#2196F3",
+               s=20, alpha=0.6, zorder=3)
+    ax.scatter([1] * len(multi_vals), multi_vals, color="#9C27B0",
+               s=20, alpha=0.6, zorder=3)
+
+    ax.axhline(0, color="black", linewidth=0.8, linestyle="--", alpha=0.4)
+
+    mono_label  = model_delta_df.get("mono_model",  ["mono"])[0]  if "mono_model"  in model_delta_df.columns else "mono"
+    multi_label = model_delta_df.get("multi_model", ["multi"])[0] if "multi_model" in model_delta_df.columns else "multi"
+    ax.set_xticks([0, 1])
+    ax.set_xticklabels([mono_label, multi_label], fontsize=10)
+
+    t, p1, p2, n = (ttest_result["t_stat"], ttest_result["p_one_tailed"],
+                    ttest_result["p_two_tailed"], ttest_result["n_items"])
+    annot = (f"paired t = {t:.3f}\np(one-tail) = {p1:.3f},  p(two-tail) = {p2:.3f}"
+             f"\nN = {n} items")
+    ax.text(0.05, 0.97, annot, transform=ax.transAxes, va="top", fontsize=8,
+            bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.85))
+
+    ax.set_ylabel("Surprisal(FR) − Surprisal(EN)", fontsize=9)
+    ax.set_title(title, fontsize=10, fontweight="bold")
+    fig.tight_layout()
+
+    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+    fig.savefig(output_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"  Plot saved → {output_path}")
 
 
 # ---------------------------------------------------------------------------
@@ -570,30 +285,21 @@ def plot_all_pairs(
 
 def run_analysis(
     surprisal_paths,
-    rt_path:     str,
     output_dir:  str = "results",
-    n_perm:      int = 10_000,
     pll_variant: str = "PLL",
 ) -> list[dict]:
-    """End-to-end correlation analysis for all model pairs and both regions.
+    """End-to-end t-test analysis for all model pairs and both regions.
 
     For each (model pair × region) combination:
-      1. Compute ΔS_interaction per item from surprisal data.
-      2. Compute ΔRT_interaction per item from RT data.
-      3. Merge on item_no.
-      4. Run Pearson r, Spearman rho, and permutation test.
-      5. Save a scatter plot.
+      1. Compute per-item S_mono(FR−EN) and S_multi(FR−EN).
+      2. Run a paired t-test (H1: mono > multi).
+      3. Save a paired violin plot.
 
-    Results are also saved to {output_dir}/correlation_results.json.
+    Results are saved to {output_dir}/ttest_results.json.
 
     Args:
         surprisal_paths: str or list[str] — path(s) to surprisal CSV file(s).
-                         Each file is the output of surprisal_causal.py or
-                         surprisal_masked.py for one model.
-        rt_path:         Path to behavioral_rt_cleaned.csv
-                         (output of data_preprocessing.py).
         output_dir:      Directory to save plots and results JSON.
-        n_perm:          Number of permutation iterations.
         pll_variant:     Which surprisal column to use for masked LMs.
                          'PLL'          → Salazar et al. (2020) [default]
                          'PLL_word_l2r' → Kauf & Ivanova (2023)
@@ -601,69 +307,53 @@ def run_analysis(
 
     Returns:
         List of result dicts, one per (model pair × region).
-        Each dict contains:
-            mono_model, multi_model, lm_type, region, pll_variant,
-            corr_result (pearson_r, pearson_p, spearman_rho, spearman_p, n_items),
-            p_perm, merged_df
     """
     os.makedirs(output_dir, exist_ok=True)
     figures_dir = os.path.join(output_dir, "figures")
+    os.makedirs(figures_dir, exist_ok=True)
 
-    print("Loading data …")
+    print("Loading surprisal data …")
     surprisal_df = load_surprisal(surprisal_paths)
-    rt_df        = load_behavioral_rt(rt_path)
 
     available_models = set(surprisal_df["model"].unique())
-    print(f"  Models in surprisal data: {sorted(available_models)}")
-    print(f"  RT data shape: {rt_df.shape}")
+    print(f"  Models: {sorted(available_models)}")
     print(f"  PLL variant: {pll_variant}")
 
     all_results = []
 
     for mono_model, multi_model, lm_type in MODEL_PAIRS:
-        # Skip pairs where either model is missing from surprisal data
         if mono_model not in available_models or multi_model not in available_models:
             print(f"  Skipping {mono_model} → {multi_model} (data not available)")
             continue
 
-        for region in CORRELATION_REGIONS:
+        for region in ANALYSIS_REGIONS:
             print(f"\n--- {mono_model} → {multi_model}  |  {region} ---")
 
-            # Compute interactions
-            surp_int = compute_surprisal_interaction(
+            model_delta = compute_model_delta(
                 surprisal_df, mono_model, multi_model, region,
                 pll_variant=pll_variant,
             )
-            rt_int = compute_rt_interaction(rt_df, region)
 
-            # Merge
-            merged = merge_interactions(surp_int, rt_int)
-            print(f"  Merged items: {len(merged)}")
-
-            if len(merged) < 5:
-                print("  Too few items to correlate — skipping.")
+            if len(model_delta) < 5:
+                print("  Too few items — skipping.")
                 continue
 
-            # Correlation
-            corr = run_correlation(merged)
-            p_perm = permutation_test(merged, n_permutations=n_perm)
-            corr["p_perm"] = p_perm
+            tt = run_model_ttest(model_delta)
+            print(f"  t = {tt['t_stat']:.3f}, "
+                  f"p(two) = {tt['p_two_tailed']:.3f}, "
+                  f"p(one) = {tt['p_one_tailed']:.3f}, "
+                  f"mean diff = {tt['mean_diff']:.3f}, "
+                  f"N = {tt['n_items']}")
 
-            print(f"  Pearson r = {corr['pearson_r']:.3f}, "
-                  f"p = {corr['pearson_p']:.3f}, "
-                  f"p_perm = {p_perm:.3f}, "
-                  f"N = {corr['n_items']}")
-            print(f"  Spearman ρ = {corr['spearman_rho']:.3f}, "
-                  f"p = {corr['spearman_p']:.3f}")
-
-            # Scatter plot (individual)
-            title = (f"{mono_model} → {multi_model}  |  {region.replace('region', 'Region ')}\n"
-                     f"r = {corr['pearson_r']:.3f},  p = {corr['pearson_p']:.3f}")
+            region_label = "Region 2 (V+Adv)" if region == "region2" else "Region 3 (Spillover)"
+            variant_tag  = "" if pll_variant == "PLL" else "  [PLL-word-l2r]"
+            title = (f"{mono_model} vs {multi_model}  |  {region_label}{variant_tag}\n"
+                     f"S(FR−EN) per model  (expected: mono > multi)")
             plot_path = os.path.join(
                 figures_dir,
-                f"scatter_{mono_model}_vs_{multi_model}_{region}.png",
+                f"model_delta_{mono_model}_vs_{multi_model}_{region}.png",
             )
-            plot_scatter(merged, corr, title, plot_path)
+            plot_model_delta(model_delta, tt, title, plot_path)
 
             all_results.append({
                 "mono_model":  mono_model,
@@ -671,24 +361,13 @@ def run_analysis(
                 "lm_type":     lm_type,
                 "region":      region,
                 "pll_variant": pll_variant,
-                "corr_result": corr,
-                "p_perm":      p_perm,
-                "merged_df":   merged,
+                "ttest":       tt,
             })
 
-    # Grid plots (one per region)
-    for region in CORRELATION_REGIONS:
-        if any(r["region"] == region for r in all_results):
-            plot_all_pairs(all_results, region, figures_dir)
-
-    # Save summary JSON (exclude merged_df — not JSON-serialisable)
-    summary = [
-        {k: v for k, v in r.items() if k != "merged_df"}
-        for r in all_results
-    ]
-    json_path = os.path.join(output_dir, "correlation_results.json")
+    # Save summary JSON
+    json_path = os.path.join(output_dir, "ttest_results.json")
     with open(json_path, "w") as f:
-        json.dump(summary, f, indent=2)
+        json.dump(all_results, f, indent=2)
     print(f"\nResults saved → {json_path}")
 
     return all_results
@@ -702,23 +381,15 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="Compute surprisal–RT interaction correlations."
+        description="Paired t-test analysis of monolingual vs. multilingual surprisal."
     )
     parser.add_argument(
         "--surprisal", required=True, nargs="+",
         help="Path(s) to surprisal CSV file(s) — one per model, or a single combined file.",
     )
     parser.add_argument(
-        "--rt", required=True,
-        help="Path to behavioral_rt_cleaned.csv (output of data_preprocessing.py).",
-    )
-    parser.add_argument(
         "--output_dir", default="results",
-        help="Directory to write plots and correlation_results.json.",
-    )
-    parser.add_argument(
-        "--n_perm", type=int, default=10_000,
-        help="Number of permutation iterations (default: 10,000).",
+        help="Directory to write plots and ttest_results.json.",
     )
     parser.add_argument(
         "--pll_variant", default="PLL", choices=list(SURP_REGION_COLS),
@@ -731,8 +402,6 @@ if __name__ == "__main__":
 
     run_analysis(
         surprisal_paths=args.surprisal,
-        rt_path=args.rt,
         output_dir=args.output_dir,
-        n_perm=args.n_perm,
         pll_variant=args.pll_variant,
     )

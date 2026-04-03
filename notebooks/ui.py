@@ -1,14 +1,14 @@
 """
 ui.py
-ipywidgets UI for the surprisal–RT correlation analysis pipeline.
+ipywidgets UI for the surprisal t-test analysis pipeline.
 
 Layout
 ------
   Section 0  Introduction — project description + registered model pairs table
-  Section 1  Data Input   — surprisal CSV paths + RT data path + Load button
+  Section 1  Data Input   — surprisal CSV paths + Load button
   Section 2  Options      — model pair checkboxes, region checkboxes, PLL variant
   Section 3  Run          — save-to-disk toggle + output directory + Run button
-  Section 4  Output       — inline results table and scatter plots (or saved to disk)
+  Section 4  Output       — inline results table and violin plots (or saved to disk)
 """
 
 import io
@@ -23,9 +23,8 @@ matplotlib.use("Agg")          # non-interactive backend; figures rendered to PN
 import matplotlib.pyplot as plt
 import ipywidgets as widgets
 from IPython.display import display, clear_output
-from IPython.display import HTML as _IPyHTML   # only for display() calls, NOT inside widget containers
-from IPython.display import Image as _IPyImage # for rendering Agg figures inline
-from scipy import stats as scipy_stats
+from IPython.display import HTML as _IPyHTML
+from IPython.display import Image as _IPyImage
 
 # Resolve project root (one level above notebooks/) and make it the working
 # directory so that relative paths like "results/..." and "data/..." work
@@ -83,11 +82,10 @@ def _model_pair_table() -> widgets.HTML:
 # ---------------------------------------------------------------------------
 
 class CorrelationUI:
-    """Interactive widget UI for the correlation analysis pipeline."""
+    """Interactive widget UI for the surprisal t-test analysis pipeline."""
 
     def __init__(self):
         self._surprisal_df = None
-        self._rt_df        = None
         self._pair_checks  = {}       # (mono, multi) → Checkbox widget
         self._build()
 
@@ -101,21 +99,19 @@ class CorrelationUI:
             widgets.HTML("""
             <div style="font-family:sans-serif; max-width:840px">
               <h2 style="margin-bottom:4px">
-                Syntactic Transfer in LLMs — Correlation Analysis
+                Syntactic Transfer in LLMs — Surprisal Analysis
               </h2>
               <p style="color:#444; margin:4px 0 10px 0">
-                Computes a 2×2 surprisal–RT interaction per model pair and
-                correlates it with human maze-task reading times:
+                Computes per-item surprisal deltas and runs paired t-tests
+                comparing monolingual vs. multilingual models (H1):
               </p>
               <div style="font-family:monospace; background:#f1f3f4;
                           padding:8px 14px; border-radius:4px; font-size:13px">
-                ΔS &nbsp;= [S<sub>mono</sub>(FR) − S<sub>mono</sub>(EN)] −
-                           [S<sub>multi</sub>(FR) − S<sub>multi</sub>(EN)]<br>
-                ΔRT = [RT<sub>mono</sub>(FR) − RT<sub>mono</sub>(EN)] −
-                      [RT<sub>ebilingual</sub>(FR) − RT<sub>ebilingual</sub>(EN)]<br>
+                S_mono(FR−EN)  = surprisal_mono(FR)  − surprisal_mono(EN)<br>
+                S_multi(FR−EN) = surprisal_multi(FR) − surprisal_multi(EN)<br>
                 <br>
-                Correlation: &nbsp; ΔS &nbsp;~&nbsp; ΔRT &nbsp; across items
-                &nbsp;(Pearson r + permutation test)
+                H1: &nbsp; mean(S_mono(FR−EN)) &gt; mean(S_multi(FR−EN)) &nbsp;
+                (paired t-test)
               </div>
               <p style="color:#444; margin:10px 0 4px 0">
                 <b>Registered model pairs</b>
@@ -146,10 +142,6 @@ class CorrelationUI:
             value=_default_surp,
             layout=widgets.Layout(width="540px", height="200px"),
         )
-        self._rt_w = widgets.Text(
-            value="data/behavioral_rt_cleaned.csv",
-            layout=widgets.Layout(width="540px"),
-        )
         self._load_btn = widgets.Button(
             description="Load Data",
             button_style="info",
@@ -163,8 +155,6 @@ class CorrelationUI:
             _section("1 · Data Input"),
             widgets.HTML("<b>Surprisal CSV paths</b> — one file path per line:"),
             self._surp_w,
-            widgets.HTML("<b>RT data path:</b>"),
-            self._rt_w,
             self._load_btn,
             self._load_out,
         ])
@@ -194,13 +184,6 @@ class CorrelationUI:
             layout=widgets.Layout(margin="0"),
         )
 
-        self._resid_cb = widgets.Checkbox(
-            value=False,
-            description="Ablation: residualize RT on region text length  "
-                        "(controls for nchar of region text before correlating)",
-            style={"description_width": "initial"},
-        )
-
         self._options_box = widgets.VBox([
             _section("2 · Model Pairs & Options"),
             widgets.HTML("<b>Model pairs</b> — only pairs present in the loaded data are enabled:"),
@@ -208,8 +191,6 @@ class CorrelationUI:
             widgets.HTML("<br><b>Regions:</b>"),
             self._region_checks["region2"],
             self._region_checks["region3"],
-            widgets.HTML("<br><b>RT residualization (ablation):</b>"),
-            self._resid_cb,
             widgets.HTML("<br><b>PLL variant</b> (applies to masked LMs only):"),
             self._pll_w,
         ], layout=widgets.Layout(display="none"))
@@ -270,20 +251,15 @@ class CorrelationUI:
     def _on_load(self, _):
         with self._load_out:
             clear_output()
-            importlib.reload(_corr)   # pick up any edits to correlation.py
+            importlib.reload(_corr)
 
             paths_raw = self._surp_w.value.strip()
-            rt_path   = self._rt_w.value.strip()
-
             if not paths_raw:
                 print("⚠  Enter at least one surprisal CSV path.")
                 return
-            if not rt_path:
-                print("⚠  Enter the RT data path.")
-                return
 
             paths   = [p.strip() for p in paths_raw.splitlines() if p.strip()]
-            missing = [p for p in paths + [rt_path] if not os.path.exists(p)]
+            missing = [p for p in paths if not os.path.exists(p)]
             if missing:
                 for m in missing:
                     print(f"✗  File not found: {m}")
@@ -291,7 +267,6 @@ class CorrelationUI:
 
             try:
                 self._surprisal_df = _corr.load_surprisal(paths)
-                self._rt_df        = _corr.load_behavioral_rt(rt_path)
             except Exception as exc:
                 print(f"✗  Error loading data: {exc}")
                 return
@@ -299,8 +274,6 @@ class CorrelationUI:
             available = set(self._surprisal_df["model"].unique())
             print(f"✔  Surprisal loaded  —  {len(self._surprisal_df):,} rows  "
                   f"|  models: {sorted(available)}")
-            print(f"✔  RT data loaded    —  {len(self._rt_df):,} trials  "
-                  f"|  participants: {self._rt_df['participant'].nunique()}")
 
             # Populate model pair checkboxes, disabled if data absent
             self._pair_checks = {}
@@ -325,9 +298,7 @@ class CorrelationUI:
         with self._results_out:
             clear_output()
 
-            importlib.reload(_corr)   # pick up any edits to correlation.py
-
-            if self._surprisal_df is None or self._rt_df is None:
+            if self._surprisal_df is None:
                 print("⚠  Load data first.")
                 return
 
@@ -341,11 +312,7 @@ class CorrelationUI:
                 print("⚠  Select at least one model pair.")
                 return
 
-            use_resid = self._resid_cb.value
-            regions = [
-                (r + "_resid" if use_resid else r)
-                for r, cb in self._region_checks.items() if cb.value
-            ]
+            regions = [r for r, cb in self._region_checks.items() if cb.value]
             if not regions:
                 print("⚠  Select at least one region.")
                 return
@@ -354,11 +321,9 @@ class CorrelationUI:
             out_dir = self._outdir_w.value.strip()
             pll_var = self._pll_w.value
 
-            # Build a combo subfolder name, e.g. "PLL_raw" or "PLL_word_l2r_resid"
-            rt_label   = "resid" if use_resid else "raw"
-            combo_dir  = os.path.join(out_dir, f"{pll_var}_{rt_label}")
+            # Organise output by PLL variant: results/PLL/ or results/PLL_word_l2r/
+            combo_dir   = os.path.join(out_dir, pll_var)
             figures_dir = os.path.join(combo_dir, "figures")
-
             if save:
                 os.makedirs(figures_dir, exist_ok=True)
 
@@ -370,47 +335,44 @@ class CorrelationUI:
                     print(f"  Running {label} …", end="  ")
 
                     try:
-                        surp_int = _corr.compute_surprisal_interaction(
+                        model_delta = _corr.compute_model_delta(
                             self._surprisal_df, mono, multi, region,
                             pll_variant=pll_var,
                         )
-                        rt_int = _corr.compute_rt_interaction(self._rt_df, region)
-                        merged = _corr.merge_interactions(surp_int, rt_int)
                     except Exception as exc:
                         print(f"✗  {exc}")
                         continue
 
-                    if len(merged) < 5:
-                        print(f"too few items ({len(merged)}) — skipped")
+                    if len(model_delta) < 5:
+                        print(f"too few items ({len(model_delta)}) — skipped")
                         continue
 
-                    corr_res         = _corr.run_correlation(merged)
-                    p_perm           = _corr.permutation_test(merged)
-                    corr_res["p_perm"] = p_perm
-
-                    r, p, rho = (corr_res["pearson_r"],
-                                 corr_res["pearson_p"],
-                                 corr_res["spearman_rho"])
-                    print(f"r = {r:.3f}, p = {p:.3f}, "
-                          f"p_perm = {p_perm:.3f}, N = {corr_res['n_items']}")
+                    tt = _corr.run_model_ttest(model_delta)
+                    print(f"t = {tt['t_stat']:.3f}, "
+                          f"p(two) = {tt['p_two_tailed']:.3f}, "
+                          f"p(one) = {tt['p_one_tailed']:.3f}, "
+                          f"mean diff = {tt['mean_diff']:.3f}, "
+                          f"N = {tt['n_items']}")
 
                     rows.append({
-                        "Mono model":    mono,
-                        "Multi model":   multi,
-                        "Region":        region,
-                        "Pearson r":     round(r,   3),
-                        "p (parametric)": round(p,  3),
-                        "p (permutation)": round(p_perm, 3),
-                        "Spearman ρ":    round(rho, 3),
-                        "N items":       corr_res["n_items"],
+                        "Mono model":     mono,
+                        "Multi model":    multi,
+                        "Region":         region,
+                        "t":              round(tt["t_stat"],       3),
+                        "p (two-tail)":   round(tt["p_two_tailed"], 3),
+                        "p (one-tail)":   round(tt["p_one_tailed"], 3),
+                        "Mean diff":      round(tt["mean_diff"],    3),
+                        "Mean mono Δ":    round(tt["mean_mono"],    3),
+                        "Mean multi Δ":   round(tt["mean_multi"],   3),
+                        "N items":        tt["n_items"],
                     })
 
-                    fig = self._scatter(merged, corr_res, mono, multi, region, pll_var)
-
+                    fig = self._violin_model_delta(
+                        model_delta, tt, mono, multi, region, pll_var)
                     if save:
                         fig_path = os.path.join(
                             figures_dir,
-                            f"scatter_{mono}_vs_{multi}_{region}.png",
+                            f"model_delta_{mono}_vs_{multi}_{region}.png",
                         )
                         fig.savefig(fig_path, dpi=150, bbox_inches="tight")
                         print(f"    → Figure saved: {fig_path}")
@@ -430,8 +392,14 @@ class CorrelationUI:
             display(_section("Results Summary"))
             display(_IPyHTML(
                 summary_df.style
-                    .format({"Pearson r": "{:.3f}", "p (parametric)": "{:.3f}",
-                             "p (permutation)": "{:.3f}", "Spearman ρ": "{:.3f}"})
+                    .format({
+                        "t":            "{:.3f}",
+                        "p (two-tail)": "{:.3f}",
+                        "p (one-tail)": "{:.3f}",
+                        "Mean diff":    "{:.3f}",
+                        "Mean mono Δ":  "{:.3f}",
+                        "Mean multi Δ": "{:.3f}",
+                    })
                     .set_table_styles([
                         {"selector": "th", "props": "background:#dce8ff; padding:6px 12px; text-align:left"},
                         {"selector": "td", "props": "padding:5px 12px; border-bottom:1px solid #eee"},
@@ -440,48 +408,58 @@ class CorrelationUI:
             ))
 
             if save:
-                csv_path = os.path.join(combo_dir, "correlation_results.csv")
+                csv_path = os.path.join(combo_dir, "ttest_results.csv")
                 summary_df.to_csv(csv_path, index=False)
                 print(f"\n✔  Summary saved → {csv_path}")
 
-    # ── Scatter plot helper ──────────────────────────────────────────────────
+    # ── Violin plot helper ───────────────────────────────────────────────────
 
-    def _scatter(self, merged, corr_res, mono, multi, region, pll_var):
-        x = merged["surprisal_interaction"].values
-        y = merged["rt_interaction"].values
+    def _violin_model_delta(self, model_delta, tt, mono, multi, region, pll_var):
+        """Paired violin: S_mono(FR−EN) vs S_multi(FR−EN) distributions across items."""
+        mono_vals  = model_delta["mono_delta"].values
+        multi_vals = model_delta["multi_delta"].values
 
         fig, ax = plt.subplots(figsize=(5.5, 4.5))
-        ax.scatter(x, y, color="#2196F3", alpha=0.75, edgecolors="white",
-                   linewidths=0.5, s=60, zorder=3)
 
-        slope, intercept, *_ = scipy_stats.linregress(x, y)
-        x_line = np.linspace(x.min(), x.max(), 200)
-        ax.plot(x_line, slope * x_line + intercept,
-                color="#F44336", linewidth=1.8, zorder=2)
+        parts = ax.violinplot(
+            [mono_vals, multi_vals],
+            positions=[0, 1],
+            showmedians=True,
+            showextrema=True,
+        )
+        colors = ["#2196F3", "#9C27B0"]
+        for pc, color in zip(parts["bodies"], colors):
+            pc.set_facecolor(color)
+            pc.set_alpha(0.55)
+        for key in ("cmedians", "cmins", "cmaxes", "cbars"):
+            parts[key].set_color("black")
+            parts[key].set_linewidth(1.2)
 
-        ax.axhline(0, color="gray", linewidth=0.8, linestyle="--", alpha=0.5)
-        ax.axvline(0, color="gray", linewidth=0.8, linestyle="--", alpha=0.5)
+        for m, ml in zip(mono_vals, multi_vals):
+            ax.plot([0, 1], [m, ml], color="gray", alpha=0.25, linewidth=0.7)
+        ax.scatter([0] * len(mono_vals),  mono_vals,  color="#2196F3",
+                   s=20, alpha=0.6, zorder=3)
+        ax.scatter([1] * len(multi_vals), multi_vals, color="#9C27B0",
+                   s=20, alpha=0.6, zorder=3)
 
-        r      = corr_res["pearson_r"]
-        p      = corr_res["pearson_p"]
-        p_perm = corr_res.get("p_perm")
-        n      = corr_res["n_items"]
+        ax.axhline(0, color="black", linewidth=0.8, linestyle="--", alpha=0.4)
+        ax.set_xticks([0, 1])
+        ax.set_xticklabels([mono, multi], fontsize=10)
 
-        annot = f"r = {r:.3f},  p = {p:.3f}"
-        if p_perm is not None:
-            annot += f"\np_perm = {p_perm:.3f}"
-        annot += f"\nN = {n}"
-        ax.text(0.05, 0.95, annot, transform=ax.transAxes,
-                va="top", fontsize=9,
-                bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.8))
+        t, p1, p2, n = (tt["t_stat"], tt["p_one_tailed"],
+                        tt["p_two_tailed"], tt["n_items"])
+        annot = (f"paired t = {t:.3f}\np(one-tail) = {p1:.3f},"
+                 f"  p(two-tail) = {p2:.3f}\nN = {n} items")
+        ax.text(0.05, 0.97, annot, transform=ax.transAxes,
+                va="top", fontsize=8,
+                bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.85))
 
-        _base_region = region.replace("_resid", "")
-        region_label = "Region 2 (V+Adv)" if _base_region == "region2" else "Region 3 (Spillover)"
+        region_label = "Region 2 (V+Adv)" if region == "region2" else "Region 3 (Spillover)"
         variant_tag  = "" if pll_var == "PLL" else "  [PLL-word-l2r]"
-        ax.set_title(f"{mono} → {multi}  |  {region_label}{variant_tag}",
+        ax.set_title(f"{mono} vs {multi}  |  {region_label}{variant_tag}\n"
+                     f"S(FR−EN) per model  (expected: mono > multi)",
                      fontsize=10, fontweight="bold")
-        ax.set_xlabel("ΔS interaction\n[S_mono(FR−EN) − S_multi(FR−EN)]", fontsize=9)
-        ax.set_ylabel("ΔRT interaction\n[RT_mono(FR−EN) − RT_ebilingual(FR−EN)]", fontsize=9)
+        ax.set_ylabel("Surprisal(FR) − Surprisal(EN)", fontsize=9)
         fig.tight_layout()
         return fig
 
@@ -497,7 +475,7 @@ class CorrelationUI:
 # ---------------------------------------------------------------------------
 
 def run_analysis() -> CorrelationUI:
-    """Instantiate and display the correlation UI. Returns the UI object."""
+    """Instantiate and display the analysis UI. Returns the UI object."""
     ui = CorrelationUI()
     ui.show()
     return ui

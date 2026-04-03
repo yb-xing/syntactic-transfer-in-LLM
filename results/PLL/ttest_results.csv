@@ -1,0 +1,17 @@
+Mono model,Multi model,Region,t,p (two-tail),p (one-tail),Mean diff,Mean mono Δ,Mean multi Δ,N items
+roberta,xlmr,region2,14.151,0.0,0.0,4.933,6.185,1.253,212
+roberta,xlmr,region3,6.731,0.0,0.0,0.722,0.904,0.182,212
+bert,mbert,region2,7.803,0.0,0.0,2.213,4.376,2.163,212
+bert,mbert,region3,2.223,0.027,0.014,0.302,0.806,0.505,212
+distilbert,distilmbert,region2,7.928,0.0,0.0,2.034,3.962,1.928,212
+distilbert,distilmbert,region3,-0.875,0.383,0.809,-0.109,1.314,1.423,212
+roberta,xlmr-large,region2,13.429,0.0,0.0,4.874,6.185,1.311,212
+roberta,xlmr-large,region3,7.467,0.0,0.0,0.74,0.904,0.164,212
+gpt2,mgpt,region2,0.307,0.759,0.38,0.058,2.864,2.806,212
+gpt2,mgpt,region3,12.556,0.0,0.0,1.569,3.11,1.541,212
+gpt2,croissantllm,region2,-3.413,0.001,1.0,-0.561,2.864,3.424,212
+gpt2,croissantllm,region3,6.917,0.0,0.0,0.933,3.11,2.176,212
+opt-125m,bloom-560m,region2,1.331,0.185,0.092,0.209,3.157,2.948,212
+opt-125m,bloom-560m,region3,11.043,0.0,0.0,1.299,3.14,1.841,212
+pythia-160m,bloom-560m,region2,-0.502,0.616,0.692,-0.073,2.875,2.948,212
+pythia-160m,bloom-560m,region3,9.376,0.0,0.0,1.106,2.946,1.841,212

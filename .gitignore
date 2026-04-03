@@ -50,6 +50,7 @@ coverage.xml
 .hypothesis/
 .pytest_cache/
 cover/
+src/data_preprocessing.py
 
 # Translations
 *.mo
@@ -207,7 +208,7 @@ marimo/_lsp/
 __marimo__/
 
 # Behavioral study data (not for public distribution — contact authors)
-# data/behavioral_rt_cleaned.csv
+data/behavioral_rt_cleaned.csv
 data/lbq_116.csv
 data/maze_116_20231004.csv
 data/stimuli.csv
