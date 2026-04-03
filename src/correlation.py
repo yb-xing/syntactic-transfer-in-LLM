@@ -60,16 +60,28 @@ MODEL_PAIRS = [
 COND_FR = "FR_Word_order"
 COND_EN = "EN_Word_order"
 
-# RT column names (from behavioral_rt_cleaned.csv) mapped to readable labels
+# RT column names (from behavioral_rt_cleaned.csv) mapped to readable labels.
+# *_resid variants use RT residualized on region text character length (ablation).
 RT_REGION_COLS = {
-    "region2": "R2_rt",
-    "region3": "R3_rt",
+    "region2":       "R2_rt",
+    "region3":       "R3_rt",
+    "region2_resid": "R2_rt_resid",
+    "region3_resid": "R3_rt_resid",
 }
 
-# Surprisal column names (from surprisal_causal.py / surprisal_masked.py output)
+# Surprisal column names (from surprisal_causal.py / surprisal_masked.py output).
+# Two variants for masked LMs; causal models always use the standard names.
+#   "PLL"          → standard Salazar et al. (2020) PLL  [default]
+#   "PLL_word_l2r" → Kauf & Ivanova (2023) adjusted metric
 SURP_REGION_COLS = {
-    "region2": "surprisal_region2",
-    "region3": "surprisal_region3",
+    "PLL": {
+        "region2": "surprisal_region2",
+        "region3": "surprisal_region3",
+    },
+    "PLL_word_l2r": {
+        "region2": "surprisal_region2_PLL_word_l2r",
+        "region3": "surprisal_region3_PLL_word_l2r",
+    },
 }
 
 # Regions to run the primary correlation over
@@ -120,9 +132,31 @@ def load_behavioral_rt(rt_path: str) -> pd.DataFrame:
         rt_path: Path to behavioral_rt_cleaned.csv.
 
     Returns:
-        DataFrame with trial-level RT data.
+        DataFrame with trial-level RT data, including R2_rt_resid / R3_rt_resid
+        columns for the length-residualized ablation (computed on-the-fly if not
+        already present in the CSV).
     """
-    return pd.read_csv(rt_path)
+    df = pd.read_csv(rt_path)
+
+    # Add residualized RT columns if missing (e.g. CSV pre-dates Step 7b).
+    # Residualizes each region's raw RT on the character length of that region's
+    # text via OLS, matching the logic in data_preprocessing.add_residualized_rt.
+    for rt_col, text_col, resid_col in [
+        ("R2_rt", "region2_text", "R2_rt_resid"),
+        ("R3_rt", "region3_text", "R3_rt_resid"),
+    ]:
+        if resid_col in df.columns:
+            continue                          # already present — skip
+        if rt_col not in df.columns or text_col not in df.columns:
+            continue
+        nchar  = df[text_col].fillna("").str.len().astype(float)
+        valid  = df[rt_col].notna()
+        slope, intercept = np.polyfit(nchar[valid].values, df.loc[valid, rt_col].values, 1)
+        resid  = df[rt_col] - (intercept + slope * nchar)
+        resid[~valid] = np.nan
+        df[resid_col] = resid
+
+    return df
 
 
 # ---------------------------------------------------------------------------
@@ -142,6 +176,23 @@ def _add_base_item_no(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     df["base_item_no"] = extracted.where(extracted.notna(), df["item_no"].astype(str))
     return df
+
+
+# ---------------------------------------------------------------------------
+# Pivot helper
+# ---------------------------------------------------------------------------
+
+def _pcol(pivot: pd.DataFrame, key: tuple) -> pd.Series:
+    """Safely fetch a MultiIndex column from a pivot, returning NaN Series if absent.
+
+    DataFrame.get(tuple_key, np.nan) returns a scalar nan when the column is
+    missing, making subsequent arithmetic return a float rather than a Series
+    and causing .rename() to fail.  This helper always returns a Series aligned
+    to the pivot's index.
+    """
+    if key in pivot.columns:
+        return pivot[key]
+    return pd.Series(np.nan, index=pivot.index, dtype=float)
 
 
 # ---------------------------------------------------------------------------
@@ -168,7 +219,17 @@ def compute_rt_interaction(rt_df: pd.DataFrame, region: str = "region2") -> pd.D
         DataFrame with columns: item_no, rt_interaction.
         Items with missing data in any cell are NaN.
     """
-    rt_col = RT_REGION_COLS[region]
+    # Derive RT column name, handling the optional _resid suffix.
+    # Using string manipulation instead of a plain dict lookup makes this robust
+    # against Jupyter kernel caching old module state without the _resid keys.
+    _use_resid  = region.endswith("_resid")
+    _base_region = region[: -len("_resid")] if _use_resid else region
+    if _base_region not in RT_REGION_COLS:
+        raise ValueError(f"Unknown region: {region!r}. "
+                         f"Valid base regions: {list(RT_REGION_COLS)}")
+    rt_col = RT_REGION_COLS[_base_region]
+    if _use_resid:
+        rt_col = rt_col + "_resid"   # "R2_rt" → "R2_rt_resid"
 
     # Add base_item_no for cross-condition pairing (SVadvP_01 + SadvPV_01 → "01")
     rt_df = _add_base_item_no(rt_df)
@@ -190,12 +251,12 @@ def compute_rt_interaction(rt_df: pd.DataFrame, region: str = "region2") -> pd.D
 
     # Condition difference per group (FR − EN): how much harder is FR for each group?
     mono_diff = (
-        pivot.get(("Monolinguals", COND_FR), np.nan)
-        - pivot.get(("Monolinguals", COND_EN), np.nan)
+        _pcol(pivot, ("Monolinguals", COND_FR))
+        - _pcol(pivot, ("Monolinguals", COND_EN))
     )
     ebil_diff = (
-        pivot.get(("Ebilinguals", COND_FR), np.nan)
-        - pivot.get(("Ebilinguals", COND_EN), np.nan)
+        _pcol(pivot, ("Ebilinguals", COND_FR))
+        - _pcol(pivot, ("Ebilinguals", COND_EN))
     )
 
     # Interaction: how much MORE does FR cost monolinguals vs. bilinguals?
@@ -213,6 +274,7 @@ def compute_surprisal_interaction(
     mono_model:   str,
     multi_model:  str,
     region:       str = "region2",
+    pll_variant:  str = "PLL",
 ) -> pd.DataFrame:
     """Compute per-item surprisal interaction: [S_mono(FR)−S_mono(EN)] − [S_multi(FR)−S_multi(EN)].
 
@@ -231,16 +293,33 @@ def compute_surprisal_interaction(
         mono_model:   Key for the monolingual model (e.g. 'roberta', 'gpt2').
         multi_model:  Key for the multilingual model (e.g. 'xlmr', 'mgpt').
         region:       One of 'region2' or 'region3'.
+        pll_variant:  Which surprisal column to use for masked LMs.
+                      'PLL'          → standard Salazar et al. (2020) [default]
+                      'PLL_word_l2r' → Kauf & Ivanova (2023) adjusted metric
+                      Causal models always use 'PLL' (only one column available).
 
     Returns:
-        DataFrame with columns: item_no, surprisal_interaction.
+        DataFrame with columns: base_item_no, surprisal_interaction.
         Items with missing surprisal in any cell are NaN.
     """
-    surp_col = SURP_REGION_COLS[region]
+    if pll_variant not in SURP_REGION_COLS:
+        raise ValueError(f"Unknown pll_variant '{pll_variant}'. "
+                         f"Choose from: {list(SURP_REGION_COLS)}")
+    # Strip _resid suffix if present: surprisal has no residualized variant,
+    # so the column lookup always uses the base region name ("region2", "region3").
+    _surp_region = region.replace("_resid", "")
+    surp_col = SURP_REGION_COLS[pll_variant][_surp_region]
 
     df = surprisal_df[
         surprisal_df["model"].isin([mono_model, multi_model])
     ].copy()
+
+    # Causal LMs have no PLL-word-l2r columns; fall back to standard surprisal.
+    # This allows mixed causal+masked analyses with PLL_word_l2r selected globally.
+    if surp_col not in df.columns or df[surp_col].isna().all():
+        fallback = SURP_REGION_COLS["PLL"][_surp_region]
+        if fallback in df.columns:
+            surp_col = fallback
 
     # Add base_item_no for cross-condition pairing (SVadvP_01 + SadvPV_01 → "01")
     df = _add_base_item_no(df)
@@ -254,12 +333,12 @@ def compute_surprisal_interaction(
 
     # Condition difference per model (FR − EN)
     mono_diff = (
-        pivot.get((mono_model,  COND_FR), np.nan)
-        - pivot.get((mono_model,  COND_EN), np.nan)
+        _pcol(pivot, (mono_model,  COND_FR))
+        - _pcol(pivot, (mono_model,  COND_EN))
     )
     multi_diff = (
-        pivot.get((multi_model, COND_FR), np.nan)
-        - pivot.get((multi_model, COND_EN), np.nan)
+        _pcol(pivot, (multi_model, COND_FR))
+        - _pcol(pivot, (multi_model, COND_EN))
     )
 
     # Interaction: how much MORE does FR cost the mono model vs. the multi model?
@@ -494,6 +573,7 @@ def run_analysis(
     rt_path:     str,
     output_dir:  str = "results",
     n_perm:      int = 10_000,
+    pll_variant: str = "PLL",
 ) -> list[dict]:
     """End-to-end correlation analysis for all model pairs and both regions.
 
@@ -514,11 +594,15 @@ def run_analysis(
                          (output of data_preprocessing.py).
         output_dir:      Directory to save plots and results JSON.
         n_perm:          Number of permutation iterations.
+        pll_variant:     Which surprisal column to use for masked LMs.
+                         'PLL'          → Salazar et al. (2020) [default]
+                         'PLL_word_l2r' → Kauf & Ivanova (2023)
+                         Causal models are unaffected (always use 'PLL').
 
     Returns:
         List of result dicts, one per (model pair × region).
         Each dict contains:
-            mono_model, multi_model, lm_type, region,
+            mono_model, multi_model, lm_type, region, pll_variant,
             corr_result (pearson_r, pearson_p, spearman_rho, spearman_p, n_items),
             p_perm, merged_df
     """
@@ -532,6 +616,7 @@ def run_analysis(
     available_models = set(surprisal_df["model"].unique())
     print(f"  Models in surprisal data: {sorted(available_models)}")
     print(f"  RT data shape: {rt_df.shape}")
+    print(f"  PLL variant: {pll_variant}")
 
     all_results = []
 
@@ -546,7 +631,8 @@ def run_analysis(
 
             # Compute interactions
             surp_int = compute_surprisal_interaction(
-                surprisal_df, mono_model, multi_model, region
+                surprisal_df, mono_model, multi_model, region,
+                pll_variant=pll_variant,
             )
             rt_int = compute_rt_interaction(rt_df, region)
 
@@ -584,6 +670,7 @@ def run_analysis(
                 "multi_model": multi_model,
                 "lm_type":     lm_type,
                 "region":      region,
+                "pll_variant": pll_variant,
                 "corr_result": corr,
                 "p_perm":      p_perm,
                 "merged_df":   merged,
@@ -633,6 +720,13 @@ if __name__ == "__main__":
         "--n_perm", type=int, default=10_000,
         help="Number of permutation iterations (default: 10,000).",
     )
+    parser.add_argument(
+        "--pll_variant", default="PLL", choices=list(SURP_REGION_COLS),
+        help="Which surprisal column to use for masked LMs: "
+             "'PLL' (Salazar et al. 2020, default) or "
+             "'PLL_word_l2r' (Kauf & Ivanova 2023). "
+             "Causal models are unaffected.",
+    )
     args = parser.parse_args()
 
     run_analysis(
@@ -640,4 +734,5 @@ if __name__ == "__main__":
         rt_path=args.rt,
         output_dir=args.output_dir,
         n_perm=args.n_perm,
+        pll_variant=args.pll_variant,
     )

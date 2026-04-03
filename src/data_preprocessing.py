@@ -27,8 +27,8 @@ Output columns for behavioral_rt_cleaned.csv:
     participant, group, condition, item_no, advTYPE,
     context_sentence, region1_text, region2_text, region3_text, region4_text,
     full_sentence, critical_token,
-    R1_rt, R2_rt, R3_rt, R4_rt
-    (RT cells are NaN where the value was a region-specific outlier)
+    R1_rt, R2_rt, R3_rt, R4_rt           — raw RT (NaN where outlier)
+    R2_rt_resid, R3_rt_resid             — residualized on region text length (ablation)
 """
 
 import os
@@ -421,6 +421,58 @@ def attach_stimuli(rt_df: pd.DataFrame, stimuli_df: pd.DataFrame) -> pd.DataFram
 
 
 # ---------------------------------------------------------------------------
+# Step 7b: Residualize RT on region text character length
+# ---------------------------------------------------------------------------
+
+def add_residualized_rt(df: pd.DataFrame) -> pd.DataFrame:
+    """Add residualized RT columns (R2_rt_resid, R3_rt_resid) as ablation covariates.
+
+    For each of Region 2 and Region 3, fits a simple OLS regression:
+
+        RT ~ nchar(region_text)
+
+    and stores the residuals.  Residualization is done across all groups
+    (Monolinguals + Ebilinguals) so the covariate effect is removed uniformly
+    without interacting with the group membership that is the variable of interest.
+
+    NaN RT cells (outliers from apply_rt_cutoffs) remain NaN in the residualized
+    columns.  The raw R2_rt / R3_rt columns are unchanged.
+
+    Args:
+        df: Wide trial-level DataFrame from attach_stimuli, containing
+            R2_rt, R3_rt, region2_text, region3_text columns.
+
+    Returns:
+        DataFrame with two additional columns: R2_rt_resid, R3_rt_resid.
+    """
+    df = df.copy()
+
+    for rt_col, text_col, resid_col in [
+        ("R2_rt", "region2_text", "R2_rt_resid"),
+        ("R3_rt", "region3_text", "R3_rt_resid"),
+    ]:
+        nchar = df[text_col].fillna("").str.len().astype(float)
+
+        # Fit OLS only on non-NaN RT rows
+        valid = df[rt_col].notna()
+        x = nchar[valid].values
+        y = df.loc[valid, rt_col].values
+
+        slope, intercept = np.polyfit(x, y, 1)
+        fitted    = intercept + slope * nchar
+        residuals = df[rt_col] - fitted
+        residuals[~valid] = np.nan
+
+        df[resid_col] = residuals
+
+        r_sq = float(np.corrcoef(x, y)[0, 1] ** 2)
+        print(f"  {resid_col}: slope={slope:.2f} ms/char, "
+              f"R²={r_sq:.3f}, N={valid.sum()}")
+
+    return df
+
+
+# ---------------------------------------------------------------------------
 # Step 8: Descriptive statistics
 # ---------------------------------------------------------------------------
 
@@ -629,6 +681,11 @@ def run_preprocessing(
     print("=" * 60)
     rt_df = attach_stimuli(df, stimuli_df)
     print(f"  Final DataFrame shape: {rt_df.shape}")
+
+    print("\n" + "=" * 60)
+    print("Step 7b — Residualize RT on region text length (ablation)")
+    print("=" * 60)
+    rt_df = add_residualized_rt(rt_df)
 
     print("\n" + "=" * 60)
     print("Step 8 — Descriptive statistics")

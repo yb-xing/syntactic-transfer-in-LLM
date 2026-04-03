@@ -1,6 +1,6 @@
 """
 generate_stimuli.py
-Generate additional matched EN/FR sentence pairs using Gemini 2.5 Pro.
+Generate additional matched EN/FR sentence pairs using Gemini 2.5 Flash or outperforming models.
 
 Purpose:
     The existing 32 maze task items have human RT data and are used for

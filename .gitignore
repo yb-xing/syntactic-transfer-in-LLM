@@ -25,7 +25,7 @@ share/python-wheels/
 .installed.cfg
 *.egg
 MANIFEST
-
+.vscode
 # PyInstaller
 #  Usually these files are written by a python script from a template
 #  before PyInstaller builds the exe, so as to inject date/other infos into it.
@@ -205,3 +205,11 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Behavioral study data (not for public distribution — contact authors)
+# data/behavioral_rt_cleaned.csv
+data/lbq_116.csv
+data/maze_116_20231004.csv
+data/stimuli.csv
+data/stimuli_combined.csv
+run_all_models.sh

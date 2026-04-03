@@ -36,7 +36,7 @@ MODELS = {
     # Multilingual / bilingual (causal) — all include substantial French
     "mgpt":         "ai-forever/mGPT",
     "bloom-560m":   "bigscience/bloom-560m",
-    "croissantllm": "croissantllm/CroissantLLM-Base",
+    "croissantllm": "croissantllm/CroissantLLMBase",
 }
 
 # Each tuple: (monolingual_key, multilingual_key)

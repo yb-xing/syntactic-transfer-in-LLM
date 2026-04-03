@@ -1,11 +1,10 @@
-# syntactic-echo
+# syntactic-transfer-in-LLM
 
-> *Does French syntax echo in how language models process English?*
+> *Does French syntax echo in how multilingual-language models process English?*
 
 [![Code License: MIT](https://img.shields.io/badge/Code%20License-MIT-green.svg)](LICENSE)
-[![Data License: CC BY-NC 4.0](https://img.shields.io/badge/Data%20License-CC%20BY--NC%204.0-lightgrey.svg)](https://creativecommons.org/licenses/by-nc/4.0/)
 
-A computational psycholinguistics project that uses **surprisal analysis across multilingual and monolingual LLMs** to model cross-lingual syntactic transfer — a phenomenon documented in human bilingual processing and grounded in a published behavioral study.
+A computational psycholinguistics project that uses **surprisal analysis across multilingual and monolingual LLMs** to model cross-linguistic syntactic transfer — a phenomenon documented in human bilingual processing and grounded in a published behavioral study.
 
 ---
 
@@ -28,7 +27,7 @@ It's ungrammatical in English — adverbs don't go between the verb and the obje
 
 > *Jean regarde **souvent** la télé.*
 
-In a published maze task study (*Bilingualism: Language and Cognition*, in production), L1 English speakers showed measurable RT facilitation when reading V+Adv English sentences compared to L1 English monolinguals. The interpretation: their French grammar partially licenses the ungrammatical English structure, reducing processing difficulty.
+In a published maze task study (Xing & Sabourin, 2026, *Bilingualism: Language and Cognition*, in production), L1 English speakers showed measurable RT facilitation when reading V+Adv English sentences compared to L1 English monolinguals. The interpretation: their French grammar partially licenses the ungrammatical English structure, reducing processing difficulty.
 
 This project asks whether that same signal is detectable in LLMs — using surprisal as a proxy for processing difficulty, and multilingual vs. monolingual training as a proxy for bilingual vs. monolingual cognition.
 
@@ -51,7 +50,7 @@ Four sentence conditions, item-aligned with the behavioral study where possible:
 
 ### Model Comparison
 
-#### Masked LMs (PLL via Salazar et al., 2020)
+#### Masked LMs (PLL — Salazar et al. 2020; PLL-word-l2r — Kauf & Ivanova 2023)
 
 | Monolingual English | Multilingual | Notes |
 |---|---|---|
@@ -73,8 +72,23 @@ The **XLM-R vs. RoBERTa** contrast remains the primary comparison. All multiling
 
 ### Surprisal Metrics
 
-- **Causal LMs:** standard token-level surprisal (negative log probability given left context)
-- **Masked LMs:** pseudo-log-likelihood per token (Salazar et al., 2020) — mask each token, record the model's predicted probability for it given all other tokens
+- **Causal LMs:** standard token-level surprisal — negative log probability given left context.
+
+- **Masked LMs:** two pseudo-log-likelihood (PLL) variants are computed for every region:
+
+  | Variant | Formula | Reference |
+  |---|---|---|
+  | **PLL** | For each token *i*: mask *i*, record −log P(token_i \| all others) | Salazar et al. (2020) |
+  | **PLL-word-l2r** | For token *t* at position *p* in word *w*: mask *t* and all tokens *t' ≥ p* in *w*, then record −log P | Kauf & Ivanova (2023) |
+
+  PLL-word-l2r prevents the model from using within-word future subword context (e.g. `##ing` helping predict `watch` in `watching`), which is unavailable in a natural left-to-right reading. For single-subword words the two metrics are identical. Both are stored in the output CSV:
+
+  ```
+  surprisal_region2                  # standard PLL (Salazar et al. 2020)
+  surprisal_region2_PLL_word_l2r     # adjusted PLL (Kauf & Ivanova 2023)
+  ```
+
+  The standard `surprisal_region*` columns are used by default in `correlation.py` (compatible with causal model output). Pass `--pll_variant PLL_word_l2r` to switch.
 
 **Key derived metric:** per-item surprisal delta
 
@@ -137,12 +151,15 @@ Correlations are run separately for:
 ```
 syntactic-echo/
 ├── data/
-│   ├── stimuli.csv            # All sentence conditions with item IDs
-│   └── behavioral_rt.csv      # Per-item maze task RT (available on request)
+│   └── stimuli_generated.csv  # LLM-generated stimuli (180 items × 2 conditions)
+│   # Original maze task stimuli and behavioral RT data are not included
+│   # in this repository. See Data Availability below.
 ├── src/
-│   ├── surprisal_causal.py    # Token surprisal for GPT-2 / mGPT
-│   ├── surprisal_masked.py    # PLL extraction for RoBERTa / XLM-R
-│   └── correlation.py         # Delta computation + RT correlation analysis
+│   ├── data_preprocessing.py  # RT cleaning, outlier handling, stimuli extraction
+│   ├── generate_stimuli.py    # LLM-based stimulus generation (Gemini)
+│   ├── surprisal_causal.py    # Token surprisal for causal LMs (GPT-2, mGPT, …)
+│   ├── surprisal_masked.py    # PLL / PLL-word-l2r for masked LMs (RoBERTa, XLM-R, …)
+│   └── correlation.py         # ΔS interaction computation + RT correlation analysis
 ├── notebooks/
 │   └── analysis.ipynb         # End-to-end walkthrough with figures
 ├── results/
@@ -155,25 +172,31 @@ syntactic-echo/
 
 ## Results
 
-> 🚧 In progress — figures and correlation outputs will be added here.
+Preliminary results across 8 model pairs and 4 analysis conditions (N = 32 items per pair) show a mixed but directionally informative pattern. The strongest and most consistent finding is a significant positive correlation between the GPT-2 → mGPT surprisal interaction and human RT at Region 3 (spillover: *r* = 0.491, *p* = 0.004, permutation *p* = 0.005), replicating across all four metric/RT combinations. The primary masked LM pair (RoBERTa → XLM-R) shows a trending positive correlation at Region 2 under standard PLL (*r* = 0.319, *p* = 0.075), but this effect largely disappears under the more conservative PLL-word-l2r metric (*r* = 0.046), suggesting sensitivity to within-word subword context. GPT-2 → CroissantLLM — the closest LLM analog to the human early bilingual participants — shows positive but non-significant trends at both regions (*r* = 0.236–0.284). The BERT/mBERT and DistilBERT/DistilmBERT pairs are near zero throughout. Residualizing RT on region text length leaves all results unchanged, indicating that the raw correlation pattern is not driven by surface-length differences across items. Taken together, the results offer partial support for the hypothesis: causal multilingual models track the human syntactic transfer signal more reliably than masked models under the adjusted PLL metric, with the effect localising to the spillover region rather than the primary manipulation site.
 
-**Predicted pattern:**
+### Selected scatter plots (ΔS interaction × ΔRT interaction)
 
-| Finding | Direction | Status |
-|---|---|---|
-| XLM-R < RoBERTa surprisal at *often* (V+Adv) | Multilingual advantage | Pending |
-| No multilingual advantage in unrelated violation | Effect is syntax-specific | Pending |
-| Positive ΔS × RT facilitation correlation | Model tracks human behavior | Pending |
+**Causal LM pairs**
+
+| GPT-2 → mGPT — Region 3 (*r* = 0.491, *p* = 0.004) | GPT-2 → CroissantLLM — Region 3 (*r* = 0.284, *p* = 0.115) |
+|:---:|:---:|
+| ![gpt2 vs mgpt region3](results/PLL_raw/figures/scatter_gpt2_vs_mgpt_region3.png) | ![gpt2 vs croissantllm region3](results/PLL_raw/figures/scatter_gpt2_vs_croissantllm_region3.png) |
+
+**Masked LM pairs (standard PLL)**
+
+| RoBERTa → XLM-R — Region 2 (*r* = 0.319, *p* = 0.075) | RoBERTa → XLM-R-large — Region 3 (*r* = 0.296, *p* = 0.100) |
+|:---:|:---:|
+| ![roberta vs xlmr region2](results/PLL_raw/figures/scatter_roberta_vs_xlmr_region2.png) | ![roberta vs xlmr-large region3](results/PLL_raw/figures/scatter_roberta_vs_xlmr-large_region3.png) |
 
 ---
 
-## Future Directions
+## Future Directions: Post-training
 
-This project establishes a correlational baseline. Next steps toward a stronger causal claim:
+This project establishes a correlational baseline using pre-trained models. The natural next step is to induce syntactic transfer experimentally through post-training, which would move from correlation to a causal claim.
 
-1. **Fine-tuning experiment** — train a monolingual English model on French text and measure whether surprisal at V+Adv positions decreases post-training, isolating the causal role of French syntactic exposure
-2. **Representational probing** — probe hidden states to test whether multilingual models encode adverb placement as a language-specific feature, and whether that shifts after French exposure
-3. **Scaling analysis** — does the surprisal delta grow or shrink with model size?
+**Supervised fine-tuning (SFT):** Continue training a monolingual English model (e.g. GPT-2, RoBERTa) on French text and measure whether surprisal at V+Adv positions decreases post-training. A reduction would directly mirror the acquisition of cross-lingual transfer via French exposure — the same mechanism hypothesised in human bilinguals.
+
+**RLHF / preference training:** Rather than fine-tuning on raw French text, use reinforcement learning from human feedback to reward the model for lower perplexity on French-order English constructions. This could test whether syntactic transfer can be shaped through preference signals, and whether RLHF-trained models show a stronger or more targeted surprisal shift at the V+Adv position than SFT alone — with implications for how alignment training interacts with cross-lingual syntactic representations.
 
 ---
 
@@ -199,11 +222,11 @@ pip install -r requirements.txt
 ## Citation
 
 ```bibtex
-@article{xing2025syntactic,
-  author    = {Xing, Yubin},
-  title     = {[Title — update when available]},
+@article{xing2026syntactic,
+  author    = {Xing, Yubin and Sabourin, Laura},
+  title     = {Two co-activated grammars, one brain: Adverb placement processing of {English}--{French} bilinguals},
   journal   = {Bilingualism: Language and Cognition},
-  year      = {2025},
+  year      = {2026},
   publisher = {Cambridge University Press},
   note      = {In production}
 }
@@ -211,17 +234,17 @@ pip install -r requirements.txt
 
 ---
 
+## Data Availability
+
+The original maze task stimuli and behavioral RT data are from Xing & Sabourin (2026) and are **not included in this repository**. To replicate the full pipeline, please contact the authors.
+
+The LLM-generated stimuli (`data/stimuli_generated.csv`) and all computed surprisal outputs (`results/`) are included and sufficient to reproduce the correlation analyses.
+
+---
+
 ## License
 
-This repository uses a dual license to distinguish between code and research materials.
-
-**Code** — all files in `src/` and `notebooks/` are released under the **MIT License**. See [`LICENSE`](LICENSE) for details.
-
-**Stimuli & behavioral data** — all files in `data/` are derived from or associated with the published behavioral study below and are shared under **CC BY-NC 4.0**. You are free to use, adapt, and redistribute these materials for non-commercial purposes with attribution. Commercial use is not permitted.
-
-> Xing, Y. (2025). *[Title — update when available]*. *Bilingualism: Language and Cognition*. Cambridge University Press. In production.
-
-[![CC BY-NC 4.0](https://licensebuttons.net/l/by-nc/4.0/88x31.png)](https://creativecommons.org/licenses/by-nc/4.0/)
+All code in `src/` and `notebooks/` is released under the **MIT License**. See [`LICENSE`](LICENSE) for details.
 
 ---
 
@@ -229,5 +252,4 @@ This repository uses a dual license to distinguish between code and research mat
 
 **Yubin Xing**  
 PhD Candidate, Psycholinguistics — University of Ottawa  
-Computational Linguist / NLP Researcher  
-[GitHub](https://github.com/) · [LinkedIn](https://linkedin.com/)
+Computational Linguist / NLP Researcher
