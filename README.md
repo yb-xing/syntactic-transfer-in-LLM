@@ -13,7 +13,7 @@ A computational psycholinguistics project that uses **surprisal analysis across 
 - **Problem:** When English-French bilinguals read ungrammatical English sentences that match French word order, they process them *easier* (but not neccessarily faster) than monolingual English speakers. This is syntactic transfer.
 - **Question:** Do multilingual LLMs show the same pattern — lower surprisal on French-order English sentences than monolingual models?
 - **Method:** Compare token-level surprisal across XLM-R vs. RoBERTa and mGPT vs. GPT-2 on matched sentence stimuli. cross-linguistic transfer is operationalized as a compressed surprisal difference between grammatical and ungrammatical English word orders in multilingual vs. monolingual models.
-- **Why it matters:** Multilingual training induces measurable cross-linguistic syntactic biases — multilingual models treat ungrammatical English structures as less anomalous when those structures are licensed by another language in their training data. This has direct implications for how we evaluate and audit multilingual model behavior, which is a non-trivial matter when implementing LLMs in the field of machine translation, language assessment, and other syntax-sensitive NLP domains.
+- **Why it matters:** Multilingual training induces measurable cross-linguistic syntactic biases — multilingual models treat ungrammatical English structures as less anomalous when those structures are licensed by another language in their training data. This has direct implications for how we evaluate and audit multilingual model behavior, which is a non-trivial matter when implementing LLMs in the field of machine translation, language assessment, and other grammar-sensitive NLP domains.
 
 ---
 
