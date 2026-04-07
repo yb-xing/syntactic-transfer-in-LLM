@@ -43,7 +43,6 @@ Four sentence conditions:
 |---|---|---|
 | **V+Adv (critical)** | *David visits regularly the local gym after his classes* | Main experimental condition |
 | **Adv+V (grammatical)** | *David regularly visits the local gym after his classes* | Grammatical baseline |
-| **Unrelated violation** | *David the local gym visits regularly after his classes* | Specificity control |
 | **French source** | *David visite régulièrement la salle de sport locale après ses cours* | Model sanity check |
 
 **Critical measurement position:** the adverb token (*regularly*) — the point of syntactic disambiguation.
@@ -195,6 +194,9 @@ Apply preference training to penalize V+Adv order in English while preserving Fr
 
 **Mechanistic interpretability**
 Probe hidden states at the adverb position to identify which layers and attention heads drive the surprisal compression in multilingual models. Apply causal tracing (e.g., activation detection through sparse autoencoders) to localize the transfer signal within the network.
+
+**Unrelated violation condition (specificity control)**
+Add a scrambled word-order condition (e.g., *David the local gym visits regularly after his classes*) as a specificity control. The prediction is that multilingual models should show no surprisal advantage over monolingual models on this condition, isolating the transfer effect to the French-licensed V+Adv order specifically.
 
 **Scaling analysis**
 Does the surprisal delta grow or shrink with model size?
