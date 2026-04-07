@@ -4,7 +4,7 @@
 
 [![Code License: MIT](https://img.shields.io/badge/Code%20License-MIT-green.svg)](LICENSE)
 
-A computational psycholinguistics project that uses **surprisal analysis across multilingual and monolingual LLMs** to model cross-linguistic syntactic transfer — a phenomenon well documented in the psycholinguistics literature on bilingual grammatical processing.
+A computational psycholinguistics project that uses **surprisal analysis across multilingual and monolingual LLMs** to model cross-linguistic syntactic transfer — a phenomenon well documented in the psycholinguistics literature on bilingual sentence processing.
 
 ---
 
@@ -12,8 +12,8 @@ A computational psycholinguistics project that uses **surprisal analysis across 
 
 - **Problem:** When English-French bilinguals read ungrammatical English sentences that match French word order, they process them *easier* (but not neccessarily faster) than monolingual English speakers. This is syntactic transfer.
 - **Question:** Do multilingual LLMs show the same pattern — lower surprisal on French-order English sentences than monolingual models?
-- **Method:** Compare token-level surprisal across XLM-R vs. RoBERTa and mGPT vs. GPT-2 on matched sentence stimuli. Cross-lingual transfer is operationalized as a compressed surprisal difference between grammatical and ungrammatical English word orders in multilingual vs. monolingual models.
-- **Why it matters:** Multilingual training induces measurable cross-lingual syntactic biases — multilingual models treat ungrammatical English structures as less anomalous when those structures are licensed by another language in their training data. This has direct implications for how we evaluate and audit multilingual model behavior.
+- **Method:** Compare token-level surprisal across XLM-R vs. RoBERTa and mGPT vs. GPT-2 on matched sentence stimuli. cross-linguistic transfer is operationalized as a compressed surprisal difference between grammatical and ungrammatical English word orders in multilingual vs. monolingual models.
+- **Why it matters:** Multilingual training induces measurable cross-linguistic syntactic biases — multilingual models treat ungrammatical English structures as less anomalous when those structures are licensed by another language in their training data. This has direct implications for how we evaluate and audit multilingual model behavior, which is a non-trivial matter when implementing LLMs in the field of machine translation, language assessment, and other syntax-sensitive NLP domains.
 
 ---
 
@@ -21,11 +21,11 @@ A computational psycholinguistics project that uses **surprisal analysis across 
 
 Consider this English sentence:
 
-> *John watches **often** television.*
+> *David visits **regularly** the local gym after his classes.*
 
 It's ungrammatical in English — adverbs don't go between the verb and the object. But in French, Verb + Adverb + Object is perfectly natural:
 
-> *Jean regarde **souvent** la télé.*
+> *David visite **régulièrement** la salle de sport locale après ses cours.*
 
 In the psycholinguistics literature, grammatical violation effects in bilingual processing are well documented: English-French bilinguals show measurable processing facilitation when reading V+Adv English sentences compared to L1 English monolinguals, suggesting that their French grammar partially licenses the ungrammatical English structure.
 
@@ -41,12 +41,12 @@ Four sentence conditions:
 
 | Condition | Example | Purpose |
 |---|---|---|
-| **V+Adv (critical)** | *John watches often television* | Main experimental condition |
-| **Adv+V (grammatical)** | *John often watches television* | Grammatical baseline |
-| **Unrelated violation** | *John television watches often* | Specificity control |
-| **French source** | *Jean regarde souvent la télé* | Model sanity check |
+| **V+Adv (critical)** | *David visits regularly the local gym after his classes* | Main experimental condition |
+| **Adv+V (grammatical)** | *David regularly visits the local gym after his classes* | Grammatical baseline |
+| **Unrelated violation** | *David the local gym visits regularly after his classes* | Specificity control |
+| **French source** | *David visite régulièrement la salle de sport locale après ses cours* | Model sanity check |
 
-**Critical measurement position:** the adverb token (*often*) — the point of syntactic disambiguation.
+**Critical measurement position:** the adverb token (*regularly*) — the point of syntactic disambiguation.
 
 ### Model Comparison
 
@@ -96,7 +96,7 @@ The **XLM-R vs. RoBERTa** contrast remains the primary comparison. All multiling
 ΔS(item) = surprisal_monolingual(item) − surprisal_multilingual(item)
 ```
 
-A positive delta means the multilingual model is *less surprised* by the V+Adv order — the predicted direction if cross-lingual transfer is present.
+A positive delta means the multilingual model is *less surprised* by the V+Adv order — the predicted direction if cross-linguistic transfer is present.
 
 ### Region-Level Surprisal Aggregation
 
@@ -110,10 +110,10 @@ Sentences are parsed into four regions:
 
 | Region | Content (V+Adv condition) | Content (Adv+V condition) | Role |
 |---|---|---|---|
-| Region 1 | *John* | *John* | Subject NP baseline |
-| **Region 2** | *watches often* | *often watches* | **Primary — contains the syntactic manipulation** |
-| **Region 3** | *television* | *television* | **Spillover — processing effects commonly propagate one region downstream** |
-| Region 4 | *at home* | *at home* | Post-critical baseline |
+| Region 1 | *David* | *David* | Subject NP baseline |
+| **Region 2** | *visits regularly* | *regularly visits* | **Primary — contains the syntactic manipulation** |
+| **Region 3** | *the local gym* | *the local gym* | **Spillover — processing effects commonly propagate one region downstream** |
+| Region 4 | *after his classes* | *after his classes* | Post-critical baseline |
 
 Region 2 is the primary measure; Region 3 tests for downstream spillover, which is commonly observed in reading-time studies.
 
@@ -145,11 +145,11 @@ syntactic-echo/
 
 ### Hypothesis 1 — Multilingual models are less penalised by French word order
 
-**Test:** Paired t-test of S(FR−EN) per item, comparing monolingual vs. multilingual model within each pair. A significantly positive mean difference indicates the monolingual model assigns higher surprisal to French-order English sentences (relative to the grammatical English baseline) than the multilingual model — the predicted direction if cross-lingual syntactic bias is present.
+**Test:** Paired t-test of S(FR−EN) per item, comparing monolingual vs. multilingual model within each pair. A significantly positive mean difference indicates the monolingual model assigns higher surprisal to French-order English sentences (relative to the grammatical English baseline) than the multilingual model if cross-linguistic syntactic bias is present.
 
 **This hypothesis is strongly and consistently supported across all model pairs.**
 
-All four masked LM pairs show highly significant differences at Region 2 (all *t* > 5, *p* < .001, N = 212 items), with RoBERTa → XLM-R producing the largest effect (mean difference = 3.81 nats, *t* = 11.84). All four causal LM pairs reach significance at Region 3 (spillover): GPT-2 → mGPT (*t* = 12.56), OPT-125M → BLOOM-560M (*t* = 11.04), Pythia-160M → BLOOM-560M (*t* = 9.38), and GPT-2 → CroissantLLM (*t* = 6.92). The notable exceptions are GPT-2 → CroissantLLM at Region 2 (*t* = −3.41, reversed direction) and GPT-2 → mGPT at Region 2 (*t* = 0.31, non-significant), suggesting cross-lingual transfer in causal models is stronger at the spillover region than at the critical word itself — consistent with the spillover topology observed in human reading time studies.
+All four masked LM pairs show highly significant differences at Region 2 (all *t* > 5, *p* < .001, N = 212 items), with RoBERTa → XLM-R producing the largest effect (mean difference = 3.81 nats, *t* = 11.84). All four causal LM pairs reach significance at Region 3 (spillover): GPT-2 → mGPT (*t* = 12.56), OPT-125M → BLOOM-560M (*t* = 11.04), Pythia-160M → BLOOM-560M (*t* = 9.38), and GPT-2 → CroissantLLM (*t* = 6.92). The notable exceptions are GPT-2 → CroissantLLM at Region 2 (*t* = −3.41, reversed direction) and GPT-2 → mGPT at Region 2 (*t* = 0.31, non-significant), suggesting cross-linguistic transfer in causal models is stronger at the spillover region than at the critical word itself — consistent with the spillover topology observed in human reading time studies.
 
 **Full results** (PLL-word-l2r; N = 212 items per pair):
 
@@ -188,16 +188,16 @@ Planned. See Future Directions.
 Correlate per-item ΔS with per-item RT facilitation from human bilingual reading time studies. The prediction is that items where multilingual models show the largest surprisal reduction correspond to items where bilinguals showed the most processing facilitation. Planned as a follow-up analysis.
 
 **Fine-tuning experiment (causal)**
-Continue training a monolingual English model on French text and measure whether surprisal at V+Adv positions decreases post-training — isolating the causal role of French syntactic exposure, and mirroring the acquisition of cross-lingual transfer via L2 exposure in humans.
+Continue training a monolingual English model on French text and measure whether surprisal at V+Adv positions decreases post-training. This is to isolate the causal role of French syntactic exposure (i.e., mirror the acquisition of cross-linguistic transfer via L2 exposure in humans).
 
-**RLHF / alignment**
-Apply preference training to penalize V+Adv order in English while preserving French syntactic competence. Tests whether RLHF can selectively suppress cross-lingual syntactic bias — and whether suppression is language-specific or bleeds across the language boundary.
+**RLHF**
+Apply preference training to penalize V+Adv order in English while preserving French syntactic competence. Tests whether RLHF can selectively suppress cross-linguistic syntactic bias.
 
 **Mechanistic interpretability**
-Probe hidden states at the adverb position to identify which layers and attention heads drive the surprisal compression in multilingual models. Apply causal tracing (activation patching) to localize the cross-lingual transfer signal within the network.
+Probe hidden states at the adverb position to identify which layers and attention heads drive the surprisal compression in multilingual models. Apply causal tracing (e.g., activation detection through sparse autoencoders) to localize the transfer signal within the network.
 
 **Scaling analysis**
-Does the surprisal delta grow or shrink with model size? Extend the comparison within the RoBERTa / XLM-R family (base → large → XLM-R-XL) to test whether scale amplifies or attenuates cross-lingual syntactic bias.
+Does the surprisal delta grow or shrink with model size?
 
 ---
 
