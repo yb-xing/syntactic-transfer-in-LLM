@@ -37,7 +37,7 @@ This project asks whether that same signal is detectable in LLMs — using surpr
 
 ### Stimuli
 
-Four sentence conditions:
+Two sentence conditions:
 
 | Condition | Example | Purpose |
 |---|---|---|
